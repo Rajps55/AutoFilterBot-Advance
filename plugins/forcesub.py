@@ -3,7 +3,7 @@ from pymongo import MongoClient
 from pyrogram import filters, enums
 from pyrogram.errors import UserNotParticipant, ChatAdminRequired, UsernameNotOccupied, UsernameInvalid
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from helpers.fsub_helpers import is_admin, can_ban_members, can_change_info
+from .helpers.fsub_helpers import is_admin, can_ban_members, can_change_info
 
 # MongoDB connection
 try:
