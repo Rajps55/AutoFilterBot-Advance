@@ -11,3 +11,4 @@ git+https://github.com/Joelkb/cinemagoer
 shortzy
 aiohttp
 aiofiles
+uvloop
