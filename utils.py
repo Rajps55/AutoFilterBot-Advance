@@ -1,145 +1,98 @@
 import logging
-from pyrogram.errors import InputUserDeactivated, UserNotParticipant, FloodWait, UserIsBlocked, PeerIdInvalid
-from info import AUTH_CHANNEL, LONG_IMDB_DESCRIPTION
+from pyrogram.errors import InputUserDeactivated, UserNotParticipant, FloodWait, PeerIdInvalid
 from imdb import Cinemagoer
 import asyncio
-from pyrogram.types import Message, InlineKeyboardButton, ChatJoinRequest
-from pyrogram import enums
-from typing import Union
-import re
-import os
-import pytz
-import time
+from pyrogram.types import Message, InlineKeyboardButton
 from datetime import datetime
-from typing import List, Any
+import pytz
+import re
 from database.users_chats_db import db
-from bs4 import BeautifulSoup
-import requests
 from shortzy import Shortzy
+from functools import lru_cache
+from asyncio import Lock
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+imdb = Cinemagoer()
 
-imdb = Cinemagoer() 
-
-# temp db for banned 
-class temp(object):
+class TempData:
     START_TIME = 0
     BANNED_USERS = []
     BANNED_CHATS = []
-    ME = None
-    CURRENT=0
-    CANCEL = False
-    U_NAME = None
-    B_NAME = None
     SETTINGS = {}
     FILES = {}
-    USERS_CANCEL = False
-    GROUPS_CANCEL = False
-    BOT = None
 
-async def is_subscribed(bot, query, channel=AUTH_CHANNEL):
+temp = TempData()
+temp_lock = Lock()
+
+@lru_cache(maxsize=100)
+async def get_movie_from_imdb(query):
+    return imdb.search_movie(query, results=10)
+
+async def is_subscribed(bot, query, channels):
     btn = []
-    for id in channel:
-        chat = await bot.get_chat(id)
+    for channel_id in channels:
         try:
-            await bot.get_chat_member(id, query.from_user.id)
+            chat = await bot.get_chat(channel_id)
+            await bot.get_chat_member(channel_id, query.from_user.id)
         except UserNotParticipant:
-            btn.append(
-                [InlineKeyboardButton(f'Join {chat.title}', url=chat.invite_link)]
-            )
+            btn.append([InlineKeyboardButton(f'Join {chat.title}', url=chat.invite_link)])
+        except PeerIdInvalid:
+            logger.warning(f"Invalid peer ID for chat {channel_id}")
         except Exception as e:
-            logger.exception(e)
+            logger.error(f"Error while checking subscription: {e}")
     return btn
 
 async def get_poster(query, bulk=False, id=False, file=None):
     if not id:
-        query = (query.strip()).lower()
-        title = query
-        year = re.findall(r'[1-2]\d{3}$', query, re.IGNORECASE)
-        if year:
-            year = list_to_str(year[:1])
-            title = (query.replace(year, "")).strip()
-        elif file is not None:
-            year = re.findall(r'[1-2]\d{3}', file, re.IGNORECASE)
-            if year:
-                year = list_to_str(year[:1]) 
-        else:
-            year = None
-        movieid = imdb.search_movie(title.lower(), results=10)
-        if not movieid:
+        query = query.strip().lower()
+        title = re.sub(r'[1-2]\d{3}$', '', query).strip()
+        year_match = re.findall(r'[1-2]\d{3}$', query)
+        year = year_match[0] if year_match else None
+
+        movie_results = await get_movie_from_imdb(title)
+        if not movie_results:
+            logger.warning(f"No movie found for query: {query}")
             return None
+        
         if year:
-            filtered=list(filter(lambda k: str(k.get('year')) == str(year), movieid))
-            if not filtered:
-                filtered = movieid
-        else:
-            filtered = movieid
-        movieid=list(filter(lambda k: k.get('kind') in ['movie', 'tv series'], filtered))
-        if not movieid:
-            movieid = filtered
-        if bulk:
-            return movieid
-        movieid = movieid[0].movieID
+            movie_results = [m for m in movie_results if str(m.get('year')) == year]
+        movie = movie_results[0]  # Pick the top result for simplicity
+
     else:
-        movieid = query
-    movie = imdb.get_movie(movieid)
-    if movie.get("original air date"):
-        date = movie["original air date"]
-    elif movie.get("year"):
-        date = movie.get("year")
-    else:
-        date = "N/A"
-    plot = ""
-    if not LONG_IMDB_DESCRIPTION:
-        plot = movie.get('plot')
-        if plot and len(plot) > 0:
-            plot = plot[0]
-    else:
-        plot = movie.get('plot outline')
-    if plot and len(plot) > 800:
-        plot = plot[0:800] + "..."
+        movie = imdb.get_movie(query)
+
+    plot = movie.get('plot outline', '')
+    plot = plot if len(plot) < 800 else plot[:800] + "..."
 
     return {
         'title': movie.get('title'),
-        'votes': movie.get('votes'),
-        "aka": list_to_str(movie.get("akas")),
-        "seasons": movie.get("number of seasons"),
-        "box_office": movie.get('box office'),
-        'localized_title': movie.get('localized title'),
-        'kind': movie.get("kind"),
-        "imdb_id": f"tt{movie.get('imdbID')}",
-        "cast": list_to_str(movie.get("cast")),
-        "runtime": list_to_str(movie.get("runtimes")),
-        "countries": list_to_str(movie.get("countries")),
-        "certificates": list_to_str(movie.get("certificates")),
-        "languages": list_to_str(movie.get("languages")),
-        "director": list_to_str(movie.get("director")),
-        "writer":list_to_str(movie.get("writer")),
-        "producer":list_to_str(movie.get("producer")),
-        "composer":list_to_str(movie.get("composer")) ,
-        "cinematographer":list_to_str(movie.get("cinematographer")),
-        "music_team": list_to_str(movie.get("music department")),
-        "distributors": list_to_str(movie.get("distributors")),
-        'release_date': date,
         'year': movie.get('year'),
-        'genres': list_to_str(movie.get("genres")),
         'poster': movie.get('full-size cover url'),
         'plot': plot,
-        'rating': str(movie.get("rating")),
-        'url':f'https://www.imdb.com/title/tt{movieid}'
+        'url': f'https://www.imdb.com/title/tt{movie.movieID}'
     }
 
-async def broadcast_messages(user_id, message):
+def list_to_str(lst):
+    if not lst:
+        return "N/A"
+    return ', '.join(str(item) for item in lst)
+
+async def broadcast_messages(user_id, message, retries=3):
     try:
         await message.copy(chat_id=user_id)
         return "Success"
     except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return await broadcast_messages(user_id, message)
+        if retries > 0:
+            await asyncio.sleep(e.value)
+            return await broadcast_messages(user_id, message, retries - 1)
+        else:
+            logger.warning(f"Failed to send message to {user_id} after multiple retries.")
+            return "Error"
     except Exception as e:
         await db.delete_user(int(user_id))
+        logger.error(f"Error while broadcasting to {user_id}: {e}")
         return "Error"
 
 async def groups_broadcast_messages(chat_id, message):
@@ -147,16 +100,16 @@ async def groups_broadcast_messages(chat_id, message):
         k = await message.copy(chat_id=chat_id)
         try:
             await k.pin()
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Error pinning message in {chat_id}: {e}")
         return "Success"
     except FloodWait as e:
         await asyncio.sleep(e.value)
         return await groups_broadcast_messages(chat_id, message)
     except Exception as e:
         await db.delete_chat(chat_id)
+        logger.error(f"Error while broadcasting to group {chat_id}: {e}")
         return "Error"
-
 
 async def get_settings(group_id):
     settings = temp.SETTINGS.get(group_id)
@@ -166,15 +119,14 @@ async def get_settings(group_id):
     return settings
     
 async def save_group_settings(group_id, key, value):
-    current = await get_settings(group_id)
-    current.update({key: value})
-    temp.SETTINGS.update({group_id: current})
-    await db.update_settings(group_id, current)
-
+    async with temp_lock:
+        current = await get_settings(group_id)
+        current.update({key: value})
+        temp.SETTINGS.update({group_id: current})
+        await db.update_settings(group_id, current)
 
 def get_size(size):
     """Get size in readable format"""
-
     units = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB"]
     size = float(size)
     i = 0
@@ -182,43 +134,6 @@ def get_size(size):
         i += 1
         size /= 1024.0
     return "%.2f %s" % (size, units[i])
-
-def list_to_str(k):
-    if not k:
-        return "N/A"
-    elif len(k) == 1:
-        return str(k[0])
-    else:
-        return ' '.join(f'{elem}, ' for elem in k)
-
-    
-async def get_shortlink(group_id, link):
-    settings = await get_settings(group_id)
-    url = settings['url']
-    api = settings['api']
-    shortzy = Shortzy(api_key=api, base_site=url)
-
-    link = await shortzy.convert(link)
-    return link
-
-
-def get_file_id(msg: Message):
-    if msg.media:
-        for message_type in (
-            "photo",
-            "animation",
-            "audio",
-            "document",
-            "video",
-            "video_note",
-            "voice",
-            "sticker"
-        ):
-            obj = getattr(msg, message_type)
-            if obj:
-                setattr(obj, "message_type", message_type)
-                return obj
-
 
 def get_readable_time(seconds):
     periods = [('d', 86400), ('h', 3600), ('m', 60), ('s', 1)]
