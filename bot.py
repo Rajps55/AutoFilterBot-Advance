@@ -13,7 +13,6 @@ from aiohttp import web
 from typing import Union, Optional, AsyncGenerator
 
 # local imports
-from web import web_app
 from info import LOG_CHANNEL, API_ID, API_HASH, BOT_TOKEN, PORT, BIN_CHANNEL, ADMINS, DATABASE_URL
 from utils import temp, get_readable_time
 
