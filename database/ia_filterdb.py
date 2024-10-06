@@ -12,7 +12,6 @@ from info import DATABASE_URL, DATABASE_NAME, COLLECTION_NAME
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-
 client = AsyncIOMotorClient(DATABASE_URL)
 db = client[DATABASE_NAME]
 instance = Instance.from_db(db)
@@ -25,15 +24,15 @@ class Media(Document):
     caption = fields.StrField(allow_none=True)
 
     class Meta:
-        indexes = ('$file_name', )
+        indexes = ('$file_name',)
         collection_name = COLLECTION_NAME
 
 async def save_file(media):
     """Save file in database"""
-
-    # TODO: Find better way to get same file_id for same media to avoid duplicates
+    
     file_id = unpack_new_file_id(media.file_id)
     file_name = re.sub(r"@\w+|(_|\-|\.|\+)", " ", str(media.file_name))
+    
     try:
         file = Media(
             file_id=file_id,
@@ -41,33 +40,36 @@ async def save_file(media):
             file_size=media.file_size,
             caption=media.caption
         )
+        await file.commit()
     except ValidationError:
         logger.exception('Error occurred while saving file in database')
         return 'err'
-    else:
-        try:
-            await file.commit()
-        except DuplicateKeyError:      
-            logger.warning(f'{file_name} is already saved in database')
-            return 'dup'
-        else:
-            logger.info(f'{file_name} is saved to database')
-            return 'suc'
+    except DuplicateKeyError:
+        logger.warning(f'{file_name} is already saved in database')
+        return 'dup'
+    except Exception as e:
+        logger.exception(f'Some unexpected error occurred: {e}')
+        return 'err'
+    
+    logger.info(f'{file_name} is saved to database')
+    return 'suc'
 
 async def get_search_results(query, max_results=10, offset=0, filter=False, lang=None):
     """For given query return (results, next_offset)"""
-
+    
     query = query.strip()
     if not query:
         raw_pattern = '.'
     elif ' ' not in query:
         raw_pattern = r'(\b|[\.\+\-_])' + query + r'(\b|[\.\+\-_])'
     else:
-        raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]') 
+        raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]')
+    
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except:
+    except re.error:
         return None, None, None
+    
     filter = {'file_name': regex}
     cursor = Media.find(filter)
 
@@ -85,34 +87,35 @@ async def get_search_results(query, max_results=10, offset=0, filter=False, lang
         
     # Slice files according to offset and max results
     cursor.skip(offset).limit(max_results)
+    
     # Get list of files
     files = await cursor.to_list(length=max_results)
     total_results = await Media.count_documents(filter)
     next_offset = offset + max_results
     if next_offset > total_results:
-        next_offset = ''       
-    return files, next_offset, total_results
+        next_offset = ''
     
+    return files, next_offset, total_results
+
 async def delete_files(query, filter=True):
     query = query.strip()
-    # for better results
     if filter:
         query = query.replace(' ', r'(\s|\.|\+|\-|_)')
         raw_pattern = r'(\s|_|\-|\.|\+)' + query + r'(\s|_|\-|\.|\+)'
-    if not query:
+    elif not query:
         raw_pattern = '.'
-    elif ' ' not in query:
-        raw_pattern = r'(\b|[\.\+\-_])' + query + r'(\b|[\.\+\-_])'
     else:
         raw_pattern = query.replace(' ', r'.*[\s\.\+\-_]')
     
     try:
         regex = re.compile(raw_pattern, flags=re.IGNORECASE)
-    except:
+    except re.error:
         return None, None
+    
     filter = {'file_name': regex}
     total = await Media.count_documents(filter)
     files = Media.find(filter)
+    
     return total, files
 
 async def get_file_details(query):
@@ -132,7 +135,6 @@ def encode_file_id(s: bytes) -> str:
             if n:
                 r += b"\x00" + bytes([n])
                 n = 0
-
             r += bytes([i])
 
     return base64.urlsafe_b64encode(r).decode().rstrip("=")
